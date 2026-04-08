@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import "./App.css";
 import logo from "./clipwash-logo.png";
 
@@ -28,8 +28,7 @@ function App() {
 
   const currentStepIndex = steps.indexOf(step);
 
-  // ===== CLIENT ID =====
-  const getClientId = () => {
+  const getClientId = useCallback(() => {
     let clientId = localStorage.getItem("clipwash_client_id");
     if (!clientId) {
       clientId =
@@ -39,10 +38,9 @@ function App() {
       localStorage.setItem("clipwash_client_id", clientId);
     }
     return clientId;
-  };
+  }, []);
 
-  // ===== FETCH PLAN STATUS =====
-  const fetchPlanStatus = async () => {
+  const fetchPlanStatus = useCallback(async () => {
     const clientId = getClientId();
     const paid = plan === "paid";
 
@@ -64,13 +62,12 @@ function App() {
     } catch (e) {
       console.error("Failed to fetch plan status");
     }
-  };
+  }, [getClientId, plan]);
 
   useEffect(() => {
     fetchPlanStatus();
-  }, [plan]);
+  }, [fetchPlanStatus]);
 
-  // ===== FILE SELECT =====
   const handleFileChange = (e) => {
     const file = e.target.files[0];
     setSelectedFile(file);
@@ -79,7 +76,6 @@ function App() {
     setStatus(file ? `Selected: ${file.name}` : "No file selected");
   };
 
-  // ===== MAIN PIPELINE =====
   const handleCleanVideo = async () => {
     if (!selectedFile) {
       setStatus("Select a video first");
@@ -96,7 +92,6 @@ function App() {
       setIsProcessing(true);
       setDownloadUrl("");
 
-      // ===== UPLOAD =====
       setStep(steps[0]);
       setStatus("Uploading your clip...");
 
@@ -121,7 +116,6 @@ function App() {
 
       const video = uploadData.filename;
 
-      // ===== EXTRACT AUDIO =====
       setStep(steps[1]);
       setStatus("Extracting audio...");
 
@@ -142,7 +136,6 @@ function App() {
 
       const audio = extractData.audio_filename;
 
-      // ===== CENSOR =====
       setStep(steps[2]);
       setStatus("Detecting profanity...");
 
@@ -169,7 +162,6 @@ function App() {
 
       const censoredAudio = censorData.censored_audio;
 
-      // ===== MERGE =====
       setStep(steps[3]);
       setStatus("Applying bleeps...");
 
@@ -195,7 +187,6 @@ function App() {
       }
 
       const output = mergeData.output;
-
       const url = `http://localhost:8000/download/${encodeURIComponent(
         output
       )}`;
@@ -219,7 +210,6 @@ function App() {
 
       <main className="app-shell">
         <section className="hero-card">
-          {/* LEFT SIDE */}
           <div className="hero-left">
             <div className="brand-lockup">
               <img src={logo} alt="ClipWash logo" className="brand-logo" />
@@ -248,7 +238,6 @@ function App() {
             </div>
           </div>
 
-          {/* RIGHT SIDE */}
           <div className="hero-right">
             <div className="upload-card">
               <p className="eyebrow">Start a wash</p>
@@ -257,7 +246,6 @@ function App() {
                 Free plan includes watermark, 3 videos/day, and up to 60 seconds.
               </p>
 
-              {/* PLAN TOGGLE */}
               <div style={{ display: "flex", gap: "10px", marginBottom: "16px" }}>
                 <button
                   className={`plan-toggle ${
@@ -280,7 +268,6 @@ function App() {
                 </button>
               </div>
 
-              {/* PLAN STATUS */}
               <div className="status-panel" style={{ marginBottom: "16px" }}>
                 <p className="status-label">Plan</p>
                 <p className="status-text">
@@ -290,7 +277,6 @@ function App() {
                 </p>
               </div>
 
-              {/* FILE INPUT */}
               <input
                 type="file"
                 accept="video/*"
@@ -302,7 +288,6 @@ function App() {
                 {selectedFile ? selectedFile.name : "No file selected"}
               </div>
 
-              {/* BUTTON */}
               <button
                 className="primary-button"
                 onClick={handleCleanVideo}
@@ -311,13 +296,11 @@ function App() {
                 {isProcessing ? "Processing..." : "Clean Video"}
               </button>
 
-              {/* STATUS */}
               <div className="status-panel">
                 <p className="status-label">Status</p>
                 <p className="status-text">{status}</p>
               </div>
 
-              {/* STEPS */}
               <div className="step-list">
                 {steps.map((item, index) => {
                   const state =
@@ -336,7 +319,6 @@ function App() {
                 })}
               </div>
 
-              {/* DOWNLOAD */}
               {downloadUrl && (
                 <a href={downloadUrl} download className="download-button">
                   Download Cleaned Video
