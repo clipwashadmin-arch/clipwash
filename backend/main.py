@@ -24,6 +24,7 @@ app.add_middleware(
         "https://clipwash.com",
         "https://www.clipwash.com",
     ],
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
