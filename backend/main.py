@@ -302,64 +302,86 @@ def create_checkout_session(client_id: str = Query(...)):
             "error": str(e)
         }
 
-
 @app.post("/stripe-webhook")
 async def stripe_webhook(request: Request):
-    if not STRIPE_WEBHOOK_SECRET:
-        return {"success": False, "error": "Missing STRIPE_WEBHOOK_SECRET"}
-
-    payload = await request.body()
-    sig_header = request.headers.get("stripe-signature")
-
     try:
-        event = stripe.Webhook.construct_event(
-            payload,
-            sig_header,
-            STRIPE_WEBHOOK_SECRET
-        )
-    except ValueError:
-        return {"success": False, "error": "Invalid payload"}
-    except stripe.error.SignatureVerificationError:
-        return {"success": False, "error": "Invalid signature"}
+        payload = await request.body()
+        sig_header = request.headers.get("stripe-signature")
 
-    event_type = event["type"]
-    data_object = event["data"]["object"]
+        if not STRIPE_WEBHOOK_SECRET:
+            print("❌ Missing webhook secret")
+            return {"success": False}
 
-    if event_type == "checkout.session.completed":
-        client_id = (
-            data_object.get("metadata", {}).get("client_id")
-            or data_object.get("client_reference_id")
-        )
-        customer_id = data_object.get("customer")
+        try:
+            event = stripe.Webhook.construct_event(
+                payload,
+                sig_header,
+                STRIPE_WEBHOOK_SECRET
+            )
+        except Exception as e:
+            print("❌ Signature verification failed:", str(e))
+            return {"success": False}
 
-        if client_id:
-            set_paid_user(
-                client_id=client_id,
-                paid=True,
-                stripe_customer_id=customer_id
+        event_type = event.get("type")
+        data_object = event.get("data", {}).get("object", {})
+
+        print(f"🔥 Webhook received: {event_type}")
+
+        # ===== HANDLE CHECKOUT SUCCESS =====
+        if event_type == "checkout.session.completed":
+            client_id = (
+                data_object.get("metadata", {}).get("client_id")
+                or data_object.get("client_reference_id")
             )
 
-    elif event_type == "invoice.payment_failed":
-        customer_id = data_object.get("customer")
-        if customer_id:
-            mark_user_unpaid_by_customer(customer_id)
+            customer_id = data_object.get("customer")
 
-    elif event_type == "customer.subscription.deleted":
-        customer_id = data_object.get("customer")
-        if customer_id:
-            mark_user_unpaid_by_customer(customer_id)
+            print("client_id:", client_id)
+            print("customer_id:", customer_id)
 
-    elif event_type == "invoice.paid":
-        customer_id = data_object.get("customer")
-        if customer_id:
-            users = load_users()
-            for client_id, user_data in users.items():
-                if user_data.get("stripe_customer_id") == customer_id:
-                    users[client_id]["paid"] = True
-                    save_users(users)
-                    break
+            if client_id:
+                set_paid_user(
+                    client_id=client_id,
+                    paid=True,
+                    stripe_customer_id=customer_id
+                )
+                print("✅ User upgraded to PRO")
 
-    return {"success": True}
+        # ===== HANDLE SUBSCRIPTION PAYMENT =====
+        elif event_type == "invoice.paid":
+            customer_id = data_object.get("customer")
+
+            print("invoice.paid for:", customer_id)
+
+            if customer_id:
+                users = load_users()
+
+                for cid, user_data in users.items():
+                    if user_data.get("stripe_customer_id") == customer_id:
+                        users[cid]["paid"] = True
+                        save_users(users)
+                        print("✅ Subscription payment confirmed")
+                        break
+
+        # ===== HANDLE FAILED PAYMENT =====
+        elif event_type == "invoice.payment_failed":
+            customer_id = data_object.get("customer")
+            if customer_id:
+                mark_user_unpaid_by_customer(customer_id)
+                print("⚠️ Payment failed → user downgraded")
+
+        # ===== HANDLE CANCEL =====
+        elif event_type == "customer.subscription.deleted":
+            customer_id = data_object.get("customer")
+            if customer_id:
+                mark_user_unpaid_by_customer(customer_id)
+                print("⚠️ Subscription canceled")
+
+        return {"success": True}
+
+    except Exception as e:
+        print("🔥 WEBHOOK CRASH:", str(e))
+        return {"success": True}  # IMPORTANT: never return 500
 
 
 @app.post("/upload")
