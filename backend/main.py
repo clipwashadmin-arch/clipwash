@@ -21,6 +21,8 @@ app.add_middleware(
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "https://clipwash.vercel.app",
+        "https://clipwash.com",
+        "https://www.clipwash.com",
     ],
     allow_credentials=False,
     allow_methods=["*"],
@@ -47,7 +49,7 @@ if not USERS_FILE.exists():
 stripe.api_key = os.environ.get("STRIPE_SECRET_KEY")
 STRIPE_PRICE_ID = os.environ.get("STRIPE_PRICE_ID")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "https://clipwash.vercel.app")
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "https://www.clipwash.com")
 
 model = whisper.load_model("tiny")
 
