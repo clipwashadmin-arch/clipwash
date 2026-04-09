@@ -80,6 +80,8 @@ function App() {
     const clientId = getClientId();
 
     try {
+      setStatus("Connecting to payment...");
+
       const response = await fetch(
         `${API_BASE}/create-checkout-session?client_id=${encodeURIComponent(clientId)}`,
         { method: "POST" }
