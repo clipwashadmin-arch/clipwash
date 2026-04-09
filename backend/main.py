@@ -29,6 +29,7 @@ OUTPUTS_DIR = BASE_DIR / "outputs"
 DATA_DIR = BASE_DIR / "data"
 USAGE_FILE = DATA_DIR / "usage.json"
 USERS_FILE = DATA_DIR / "users.json"
+WEBHOOK_LOG_FILE = DATA_DIR / "webhook_log.json"
 
 UPLOADS_DIR.mkdir(exist_ok=True)
 OUTPUTS_DIR.mkdir(exist_ok=True)
@@ -39,6 +40,9 @@ if not USAGE_FILE.exists():
 
 if not USERS_FILE.exists():
     USERS_FILE.write_text("{}", encoding="utf-8")
+
+if not WEBHOOK_LOG_FILE.exists():
+    WEBHOOK_LOG_FILE.write_text("[]", encoding="utf-8")
 
 stripe.api_key = os.environ.get("STRIPE_SECRET_KEY")
 STRIPE_PRICE_ID = os.environ.get("STRIPE_PRICE_ID")
@@ -119,6 +123,23 @@ def load_users():
 
 def save_users(data):
     USERS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def load_webhook_log():
+    try:
+        return json.loads(WEBHOOK_LOG_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def save_webhook_log(data):
+    WEBHOOK_LOG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def append_webhook_log(entry):
+    log = load_webhook_log()
+    log.append(entry)
+    save_webhook_log(log[-50:])
 
 
 def today_key():
@@ -267,6 +288,14 @@ def debug_user(client_id: str = Query(...)):
     }
 
 
+@app.get("/debug-webhooks")
+def debug_webhooks():
+    return {
+        "success": True,
+        "events": load_webhook_log()
+    }
+
+
 @app.post("/create-checkout-session")
 def create_checkout_session(client_id: str = Query(...)):
     if not stripe.api_key:
@@ -302,15 +331,18 @@ def create_checkout_session(client_id: str = Query(...)):
             "error": str(e)
         }
 
+
 @app.post("/stripe-webhook")
 async def stripe_webhook(request: Request):
     try:
+        if not STRIPE_WEBHOOK_SECRET:
+            append_webhook_log({
+                "error": "Missing STRIPE_WEBHOOK_SECRET"
+            })
+            return {"success": True}
+
         payload = await request.body()
         sig_header = request.headers.get("stripe-signature")
-
-        if not STRIPE_WEBHOOK_SECRET:
-            print("❌ Missing webhook secret")
-            return {"success": False}
 
         try:
             event = stripe.Webhook.construct_event(
@@ -319,78 +351,65 @@ async def stripe_webhook(request: Request):
                 STRIPE_WEBHOOK_SECRET
             )
         except Exception as e:
-            print("❌ Signature verification failed:", str(e))
-            return {"success": False}
+            append_webhook_log({
+                "error": f"Signature verification failed: {str(e)}"
+            })
+            return {"success": True}
 
         event_type = event.get("type")
-        data_object = event.get("data", {}).get("object", {})
+        data_object = event.get("data", {}).get("object", {}) or {}
 
-        print(f"🔥 Webhook received: {event_type}")
+        append_webhook_log({
+            "event_type": event_type,
+            "metadata_client_id": (data_object.get("metadata") or {}).get("client_id"),
+            "client_reference_id": data_object.get("client_reference_id"),
+            "customer": data_object.get("customer")
+        })
 
-        # ===== HANDLE CHECKOUT SUCCESS =====
-if event_type == "checkout.session.completed":
-    try:
-        metadata = data_object.get("metadata") or {}
-        
-        client_id = (
-            metadata.get("client_id")
-            or data_object.get("client_reference_id")
-        )
+        if event_type == "checkout.session.completed":
+            metadata = data_object.get("metadata") or {}
 
-        customer_id = data_object.get("customer")
-
-        print("🔥 CHECKOUT COMPLETED")
-        print("client_id:", client_id)
-        print("customer_id:", customer_id)
-
-        if not client_id:
-            print("❌ NO CLIENT ID FOUND")
-        else:
-            set_paid_user(
-                client_id=client_id,
-                paid=True,
-                stripe_customer_id=customer_id
+            client_id = (
+                metadata.get("client_id")
+                or data_object.get("client_reference_id")
             )
-            print("✅ USER MARKED AS PRO")
 
-    except Exception as e:
-        print("❌ CHECKOUT HANDLER ERROR:", str(e))
-
-        # ===== HANDLE SUBSCRIPTION PAYMENT =====
-        elif event_type == "invoice.paid":
             customer_id = data_object.get("customer")
 
-            print("invoice.paid for:", customer_id)
+            if client_id:
+                set_paid_user(
+                    client_id=client_id,
+                    paid=True,
+                    stripe_customer_id=customer_id
+                )
 
-            if customer_id:
-                users = load_users()
-
-                for cid, user_data in users.items():
-                    if user_data.get("stripe_customer_id") == customer_id:
-                        users[cid]["paid"] = True
-                        save_users(users)
-                        print("✅ Subscription payment confirmed")
-                        break
-
-        # ===== HANDLE FAILED PAYMENT =====
         elif event_type == "invoice.payment_failed":
             customer_id = data_object.get("customer")
             if customer_id:
                 mark_user_unpaid_by_customer(customer_id)
-                print("⚠️ Payment failed → user downgraded")
 
-        # ===== HANDLE CANCEL =====
         elif event_type == "customer.subscription.deleted":
             customer_id = data_object.get("customer")
             if customer_id:
                 mark_user_unpaid_by_customer(customer_id)
-                print("⚠️ Subscription canceled")
+
+        elif event_type == "invoice.paid":
+            customer_id = data_object.get("customer")
+            if customer_id:
+                users = load_users()
+                for client_id, user_data in users.items():
+                    if user_data.get("stripe_customer_id") == customer_id:
+                        users[client_id]["paid"] = True
+                        save_users(users)
+                        break
 
         return {"success": True}
 
     except Exception as e:
-        print("🔥 WEBHOOK CRASH:", str(e))
-        return {"success": True}  # IMPORTANT: never return 500
+        append_webhook_log({
+            "fatal_error": str(e)
+        })
+        return {"success": True}
 
 
 @app.post("/upload")
