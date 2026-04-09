@@ -3,13 +3,15 @@ import shutil
 import subprocess
 import re
 import json
+import os
 from datetime import datetime
 from difflib import SequenceMatcher
 
-from fastapi import FastAPI, File, UploadFile, Query
+import stripe
+import whisper
+from fastapi import FastAPI, File, UploadFile, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-import whisper
 
 app = FastAPI()
 
@@ -30,6 +32,7 @@ UPLOADS_DIR = BASE_DIR / "uploads"
 OUTPUTS_DIR = BASE_DIR / "outputs"
 DATA_DIR = BASE_DIR / "data"
 USAGE_FILE = DATA_DIR / "usage.json"
+USERS_FILE = DATA_DIR / "users.json"
 
 UPLOADS_DIR.mkdir(exist_ok=True)
 OUTPUTS_DIR.mkdir(exist_ok=True)
@@ -37,6 +40,14 @@ DATA_DIR.mkdir(exist_ok=True)
 
 if not USAGE_FILE.exists():
     USAGE_FILE.write_text("{}", encoding="utf-8")
+
+if not USERS_FILE.exists():
+    USERS_FILE.write_text("{}", encoding="utf-8")
+
+stripe.api_key = os.environ.get("STRIPE_SECRET_KEY")
+STRIPE_PRICE_ID = os.environ.get("STRIPE_PRICE_ID")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "https://clipwash.vercel.app")
 
 model = whisper.load_model("tiny")
 
@@ -91,17 +102,32 @@ FUZZY_BAD_WORDS = [
     "whore",
 ]
 
+
 def load_usage():
     try:
         return json.loads(USAGE_FILE.read_text(encoding="utf-8"))
     except Exception:
         return {}
 
+
 def save_usage(data):
     USAGE_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
+
+def load_users():
+    try:
+        return json.loads(USERS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_users(data):
+    USERS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
 def today_key():
     return datetime.utcnow().strftime("%Y-%m-%d")
+
 
 def increment_user_usage(client_id: str):
     usage = load_usage()
@@ -121,6 +147,7 @@ def increment_user_usage(client_id: str):
 
     return usage[client_id]["count"]
 
+
 def get_today_count(client_id: str):
     usage = load_usage()
     today = today_key()
@@ -133,11 +160,45 @@ def get_today_count(client_id: str):
 
     return usage[client_id].get("count", 0)
 
+
+def is_paid_user(client_id: str) -> bool:
+    users = load_users()
+    return users.get(client_id, {}).get("paid", False)
+
+
+def set_paid_user(client_id: str, paid: bool = True, stripe_customer_id: str = None):
+    users = load_users()
+
+    if client_id not in users:
+        users[client_id] = {}
+
+    users[client_id]["paid"] = paid
+
+    if stripe_customer_id:
+        users[client_id]["stripe_customer_id"] = stripe_customer_id
+
+    save_users(users)
+
+
+def mark_user_unpaid_by_customer(customer_id: str):
+    users = load_users()
+
+    for client_id, user_data in users.items():
+        if user_data.get("stripe_customer_id") == customer_id:
+            users[client_id]["paid"] = False
+            save_users(users)
+            return True
+
+    return False
+
+
 def normalize_word(word: str) -> str:
     return re.sub(r"[^a-z]", "", word.lower())
 
+
 def similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
+
 
 def is_bad_word(word: str) -> bool:
     if not word:
@@ -160,6 +221,7 @@ def is_bad_word(word: str) -> bool:
 
     return False
 
+
 def get_video_duration_seconds(video_path: Path):
     command = [
         "ffprobe",
@@ -175,16 +237,16 @@ def get_video_duration_seconds(video_path: Path):
     except Exception:
         return None
 
+
 @app.get("/")
 def home():
     return {"message": "ClipWash running"}
 
+
 @app.get("/plan-status")
-def plan_status(
-    client_id: str = Query(...),
-    paid: bool = Query(False)
-):
+def plan_status(client_id: str = Query(...)):
     count = get_today_count(client_id)
+    paid = is_paid_user(client_id)
 
     return {
         "success": True,
@@ -194,12 +256,98 @@ def plan_status(
         "max_duration_seconds": None if paid else FREE_MAX_DURATION_SECONDS
     }
 
+
+@app.post("/create-checkout-session")
+def create_checkout_session(client_id: str = Query(...)):
+    if not stripe.api_key:
+        return {"success": False, "error": "Missing STRIPE_SECRET_KEY"}
+
+    if not STRIPE_PRICE_ID:
+        return {"success": False, "error": "Missing STRIPE_PRICE_ID"}
+
+    try:
+        session = stripe.checkout.Session.create(
+            mode="subscription",
+            line_items=[
+                {
+                    "price": STRIPE_PRICE_ID,
+                    "quantity": 1,
+                }
+            ],
+            success_url=f"{FRONTEND_URL}?success=true&session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{FRONTEND_URL}?canceled=true",
+            metadata={
+                "client_id": client_id
+            }
+        )
+
+        return {
+            "success": True,
+            "url": session.url
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@app.post("/stripe-webhook")
+async def stripe_webhook(request: Request):
+    if not STRIPE_WEBHOOK_SECRET:
+        return {"success": False, "error": "Missing STRIPE_WEBHOOK_SECRET"}
+
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature")
+
+    try:
+        event = stripe.Webhook.construct_event(
+            payload,
+            sig_header,
+            STRIPE_WEBHOOK_SECRET
+        )
+    except ValueError:
+        return {"success": False, "error": "Invalid payload"}
+    except stripe.error.SignatureVerificationError:
+        return {"success": False, "error": "Invalid signature"}
+
+    event_type = event["type"]
+    data_object = event["data"]["object"]
+
+    if event_type == "checkout.session.completed":
+        client_id = data_object.get("metadata", {}).get("client_id")
+        customer_id = data_object.get("customer")
+
+        if client_id:
+            set_paid_user(
+                client_id=client_id,
+                paid=True,
+                stripe_customer_id=customer_id
+            )
+
+    elif event_type == "invoice.payment_failed":
+        customer_id = data_object.get("customer")
+        if customer_id:
+            mark_user_unpaid_by_customer(customer_id)
+
+    elif event_type == "customer.subscription.deleted":
+        customer_id = data_object.get("customer")
+        if customer_id:
+            mark_user_unpaid_by_customer(customer_id)
+
+    elif event_type == "invoice.paid":
+        pass
+
+    return {"success": True}
+
+
 @app.post("/upload")
 def upload_video(
     file: UploadFile = File(...),
-    client_id: str = Query(...),
-    paid: bool = Query(False)
+    client_id: str = Query(...)
 ):
+    paid = is_paid_user(client_id)
+
     if not paid:
         count = get_today_count(client_id)
         if count >= FREE_DAILY_LIMIT:
@@ -243,6 +391,7 @@ def upload_video(
         "duration_seconds": round(duration, 2)
     }
 
+
 @app.post("/extract-audio")
 def extract_audio(filename: str):
     video_path = UPLOADS_DIR / filename
@@ -274,6 +423,7 @@ def extract_audio(filename: str):
         "audio_filename": audio_filename
     }
 
+
 @app.post("/censor-audio")
 def censor_audio(filename: str):
     audio_path = OUTPUTS_DIR / filename
@@ -290,7 +440,15 @@ def censor_audio(filename: str):
             word = normalize_word(word_data.get("word", ""))
 
             if is_bad_word(word):
-                start = round(max(0, word_data["start"] + ((word_data["end"] - word_data["start"]) * 0.3)), 2)
+                start = round(
+                    max(
+                        0,
+                        word_data["start"] + (
+                            (word_data["end"] - word_data["start"]) * 0.3
+                        )
+                    ),
+                    2
+                )
                 end = round(word_data["end"], 2)
 
                 bad_word_windows.append({
@@ -348,13 +506,15 @@ def censor_audio(filename: str):
         "censored_audio": censored_filename
     }
 
+
 @app.post("/merge-video-audio")
 def merge(
     video_filename: str,
     censored_audio_filename: str,
-    client_id: str = Query(...),
-    paid: bool = Query(False)
+    client_id: str = Query(...)
 ):
+    paid = is_paid_user(client_id)
+
     video_path = UPLOADS_DIR / video_filename
     audio_path = OUTPUTS_DIR / censored_audio_filename
 
@@ -426,8 +586,10 @@ def merge(
         "success": True,
         "output": output_filename,
         "daily_count": None if paid else get_today_count(client_id),
-        "daily_limit": None if paid else FREE_DAILY_LIMIT
+        "daily_limit": None if paid else FREE_DAILY_LIMIT,
+        "paid": paid
     }
+
 
 @app.get("/download/{filename}")
 def download_file(filename: str):

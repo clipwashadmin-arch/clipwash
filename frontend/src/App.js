@@ -10,8 +10,8 @@ function App() {
   const [step, setStep] = useState("");
   const [downloadUrl, setDownloadUrl] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
-  const [plan, setPlan] = useState("free");
   const [usage, setUsage] = useState({
+    paid: false,
     daily_count: 0,
     daily_limit: 3,
     max_duration_seconds: 60,
@@ -44,18 +44,16 @@ function App() {
 
   const fetchPlanStatus = useCallback(async () => {
     const clientId = getClientId();
-    const paid = plan === "paid";
 
     try {
       const response = await fetch(
-        `${API_BASE}/plan-status?client_id=${encodeURIComponent(
-          clientId
-        )}&paid=${paid}`
+        `${API_BASE}/plan-status?client_id=${encodeURIComponent(clientId)}`
       );
       const data = await response.json();
 
       if (data.success) {
         setUsage({
+          paid: data.paid ?? false,
           daily_count: data.daily_count ?? 0,
           daily_limit: data.daily_limit ?? 3,
           max_duration_seconds: data.max_duration_seconds ?? 60,
@@ -64,7 +62,7 @@ function App() {
     } catch (e) {
       console.error("Failed to fetch plan status", e);
     }
-  }, [getClientId, plan]);
+  }, [getClientId]);
 
   useEffect(() => {
     fetchPlanStatus();
@@ -78,6 +76,28 @@ function App() {
     setStatus(file ? `Selected: ${file.name}` : "No file selected");
   };
 
+  const handleUpgrade = async () => {
+    const clientId = getClientId();
+
+    try {
+      const response = await fetch(
+        `${API_BASE}/create-checkout-session?client_id=${encodeURIComponent(clientId)}`,
+        { method: "POST" }
+      );
+
+      const data = await response.json();
+
+      if (data.success && data.url) {
+        window.location.href = data.url;
+      } else {
+        setStatus(data.error || "Could not start checkout.");
+      }
+    } catch (err) {
+      console.error(err);
+      setStatus("Payment connection failed.");
+    }
+  };
+
   const handleCleanVideo = async () => {
     if (!selectedFile) {
       setStatus("Select a video first");
@@ -85,7 +105,6 @@ function App() {
     }
 
     const clientId = getClientId();
-    const paid = plan === "paid";
 
     const formData = new FormData();
     formData.append("file", selectedFile);
@@ -98,7 +117,7 @@ function App() {
       setStatus("Uploading your clip...");
 
       const upload = await fetch(
-        `${API_BASE}/upload?client_id=${encodeURIComponent(clientId)}&paid=${paid}`,
+        `${API_BASE}/upload?client_id=${encodeURIComponent(clientId)}`,
         {
           method: "POST",
           body: formData,
@@ -169,7 +188,7 @@ function App() {
           video
         )}&censored_audio_filename=${encodeURIComponent(
           censoredAudio
-        )}&client_id=${encodeURIComponent(clientId)}&paid=${paid}`,
+        )}&client_id=${encodeURIComponent(clientId)}`,
         { method: "POST" }
       );
 
@@ -186,7 +205,11 @@ function App() {
       const url = `${API_BASE}/download/${encodeURIComponent(output)}`;
 
       setDownloadUrl(url);
-      setStatus("Your cleaned video is ready.");
+      setStatus(
+        mergeData.paid
+          ? "Your Pro cleaned video is ready."
+          : "Your cleaned video is ready."
+      );
       setIsProcessing(false);
 
       await fetchPlanStatus();
@@ -237,35 +260,29 @@ function App() {
               <p className="eyebrow">Start a wash</p>
               <h3 className="panel-title">Upload a video</h3>
               <p className="panel-copy">
-                Free plan includes watermark, 3 videos/day, and up to 60 seconds.
+                {usage.paid
+                  ? "Pro plan active: no watermark, no free-plan limits."
+                  : "Free plan includes watermark, 3 videos/day, and up to 60 seconds."}
               </p>
-
-              <div style={{ display: "flex", gap: "10px", marginBottom: "16px" }}>
-                <button
-                  className={`plan-toggle ${plan === "free" ? "plan-active" : ""}`}
-                  onClick={() => setPlan("free")}
-                  type="button"
-                >
-                  Free
-                </button>
-
-                <button
-                  className={`plan-toggle ${plan === "paid" ? "plan-active" : ""}`}
-                  onClick={() => setPlan("paid")}
-                  type="button"
-                >
-                  Paid Preview
-                </button>
-              </div>
 
               <div className="status-panel" style={{ marginBottom: "16px" }}>
                 <p className="status-label">Plan</p>
                 <p className="status-text">
-                  {plan === "paid"
-                    ? "Paid preview: no watermark, no limits"
+                  {usage.paid
+                    ? "ClipWash Pro active"
                     : `Free: ${usage.daily_count}/${usage.daily_limit} used today • max ${usage.max_duration_seconds}s`}
                 </p>
               </div>
+
+              {!usage.paid && (
+                <button
+                  className="primary-button"
+                  onClick={handleUpgrade}
+                  style={{ marginBottom: "12px" }}
+                >
+                  Upgrade to Pro
+                </button>
+              )}
 
               <input
                 type="file"
