@@ -17,14 +17,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "https://clipwash.vercel.app",
-        "https://clipwash.com",
-        "https://www.clipwash.com",
-    ],
-    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -260,6 +253,20 @@ def plan_status(client_id: str = Query(...)):
     }
 
 
+@app.get("/debug-user")
+def debug_user(client_id: str = Query(...)):
+    users = load_users()
+    usage = load_usage()
+
+    return {
+        "success": True,
+        "client_id": client_id,
+        "paid": is_paid_user(client_id),
+        "user_record": users.get(client_id, {}),
+        "usage_record": usage.get(client_id, {})
+    }
+
+
 @app.post("/create-checkout-session")
 def create_checkout_session(client_id: str = Query(...)):
     if not stripe.api_key:
@@ -271,14 +278,15 @@ def create_checkout_session(client_id: str = Query(...)):
     try:
         session = stripe.checkout.Session.create(
             mode="subscription",
+            client_reference_id=client_id,
             line_items=[
                 {
                     "price": STRIPE_PRICE_ID,
                     "quantity": 1,
                 }
             ],
-            success_url=f"{FRONTEND_URL}?success=true&session_id={{CHECKOUT_SESSION_ID}}",
-            cancel_url=f"{FRONTEND_URL}?canceled=true",
+            success_url=f"{FRONTEND_URL}?success=true&client_id={client_id}&session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{FRONTEND_URL}?canceled=true&client_id={client_id}",
             metadata={
                 "client_id": client_id
             }
@@ -318,7 +326,10 @@ async def stripe_webhook(request: Request):
     data_object = event["data"]["object"]
 
     if event_type == "checkout.session.completed":
-        client_id = data_object.get("metadata", {}).get("client_id")
+        client_id = (
+            data_object.get("metadata", {}).get("client_id")
+            or data_object.get("client_reference_id")
+        )
         customer_id = data_object.get("customer")
 
         if client_id:
@@ -339,7 +350,14 @@ async def stripe_webhook(request: Request):
             mark_user_unpaid_by_customer(customer_id)
 
     elif event_type == "invoice.paid":
-        pass
+        customer_id = data_object.get("customer")
+        if customer_id:
+            users = load_users()
+            for client_id, user_data in users.items():
+                if user_data.get("stripe_customer_id") == customer_id:
+                    users[client_id]["paid"] = True
+                    save_users(users)
+                    break
 
     return {"success": True}
 
@@ -391,7 +409,8 @@ def upload_video(
     return {
         "success": True,
         "filename": file.filename,
-        "duration_seconds": round(duration, 2)
+        "duration_seconds": round(duration, 2),
+        "paid": paid
     }
 
 

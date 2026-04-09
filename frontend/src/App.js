@@ -31,6 +31,14 @@ function App() {
   const currentStepIndex = steps.indexOf(step);
 
   const getClientId = useCallback(() => {
+    const params = new URLSearchParams(window.location.search);
+    const incomingClientId = params.get("client_id");
+
+    if (incomingClientId) {
+      localStorage.setItem("clipwash_client_id", incomingClientId);
+      return incomingClientId;
+    }
+
     let clientId = localStorage.getItem("clipwash_client_id");
     if (!clientId) {
       clientId =
@@ -67,6 +75,56 @@ function App() {
   useEffect(() => {
     fetchPlanStatus();
   }, [fetchPlanStatus]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const success = params.get("success");
+    const canceled = params.get("canceled");
+    const sessionId = params.get("session_id");
+
+    if (success === "true") {
+      setStatus("Payment received. Verifying Pro access...");
+
+      let attempts = 0;
+
+      const interval = setInterval(async () => {
+        attempts += 1;
+        await fetchPlanStatus();
+
+        const clientId = getClientId();
+
+        try {
+          const response = await fetch(
+            `${API_BASE}/debug-user?client_id=${encodeURIComponent(clientId)}`
+          );
+          const data = await response.json();
+
+          if (data.paid) {
+            setStatus("Payment confirmed. ClipWash Pro is now active.");
+            clearInterval(interval);
+
+            const cleanUrl = window.location.origin + window.location.pathname;
+            window.history.replaceState({}, document.title, cleanUrl);
+          }
+
+          if (attempts >= 10) {
+            clearInterval(interval);
+            setStatus("Payment processed, but Pro access has not appeared yet. Refresh in a few seconds.");
+          }
+        } catch (err) {
+          if (attempts >= 10) {
+            clearInterval(interval);
+          }
+        }
+      }, 2000);
+    }
+
+    if (canceled === "true") {
+      setStatus("Checkout canceled.");
+      const cleanUrl = window.location.origin + window.location.pathname;
+      window.history.replaceState({}, document.title, cleanUrl);
+    }
+  }, [fetchPlanStatus, getClientId]);
 
   const handleFileChange = (e) => {
     const file = e.target.files[0];
@@ -147,7 +205,7 @@ function App() {
       const extractData = await extract.json();
 
       if (!extractData.success) {
-        setStatus("Audio extraction failed");
+        setStatus(extractData.error || "Audio extraction failed");
         setIsProcessing(false);
         return;
       }
@@ -165,7 +223,7 @@ function App() {
       const censorData = await censor.json();
 
       if (!censorData.success) {
-        setStatus("Audio censoring failed");
+        setStatus(censorData.error || "Audio censoring failed");
         setIsProcessing(false);
         return;
       }
