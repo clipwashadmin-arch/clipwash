@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import "./App.css";
 import logo from "./clipwash-logo.png";
 
+const API_BASE = "https://clipwash.onrender.com";
+
 function App() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [status, setStatus] = useState("No file selected");
@@ -46,7 +48,7 @@ function App() {
 
     try {
       const response = await fetch(
-        `http://localhost:8000/plan-status?client_id=${encodeURIComponent(
+        `${API_BASE}/plan-status?client_id=${encodeURIComponent(
           clientId
         )}&paid=${paid}`
       );
@@ -60,7 +62,7 @@ function App() {
         });
       }
     } catch (e) {
-      console.error("Failed to fetch plan status");
+      console.error("Failed to fetch plan status", e);
     }
   }, [getClientId, plan]);
 
@@ -96,9 +98,7 @@ function App() {
       setStatus("Uploading your clip...");
 
       const upload = await fetch(
-        `http://localhost:8000/upload?client_id=${encodeURIComponent(
-          clientId
-        )}&paid=${paid}`,
+        `${API_BASE}/upload?client_id=${encodeURIComponent(clientId)}&paid=${paid}`,
         {
           method: "POST",
           body: formData,
@@ -120,9 +120,7 @@ function App() {
       setStatus("Extracting audio...");
 
       const extract = await fetch(
-        `http://localhost:8000/extract-audio?filename=${encodeURIComponent(
-          video
-        )}`,
+        `${API_BASE}/extract-audio?filename=${encodeURIComponent(video)}`,
         { method: "POST" }
       );
 
@@ -140,9 +138,7 @@ function App() {
       setStatus("Detecting profanity...");
 
       const censor = await fetch(
-        `http://localhost:8000/censor-audio?filename=${encodeURIComponent(
-          audio
-        )}`,
+        `${API_BASE}/censor-audio?filename=${encodeURIComponent(audio)}`,
         { method: "POST" }
       );
 
@@ -169,7 +165,7 @@ function App() {
       setStatus("Finalizing video...");
 
       const merge = await fetch(
-        `http://localhost:8000/merge-video-audio?video_filename=${encodeURIComponent(
+        `${API_BASE}/merge-video-audio?video_filename=${encodeURIComponent(
           video
         )}&censored_audio_filename=${encodeURIComponent(
           censoredAudio
@@ -187,9 +183,7 @@ function App() {
       }
 
       const output = mergeData.output;
-      const url = `http://localhost:8000/download/${encodeURIComponent(
-        output
-      )}`;
+      const url = `${API_BASE}/download/${encodeURIComponent(output)}`;
 
       setDownloadUrl(url);
       setStatus("Your cleaned video is ready.");
@@ -248,9 +242,7 @@ function App() {
 
               <div style={{ display: "flex", gap: "10px", marginBottom: "16px" }}>
                 <button
-                  className={`plan-toggle ${
-                    plan === "free" ? "plan-active" : ""
-                  }`}
+                  className={`plan-toggle ${plan === "free" ? "plan-active" : ""}`}
                   onClick={() => setPlan("free")}
                   type="button"
                 >
@@ -258,9 +250,7 @@ function App() {
                 </button>
 
                 <button
-                  className={`plan-toggle ${
-                    plan === "paid" ? "plan-active" : ""
-                  }`}
+                  className={`plan-toggle ${plan === "paid" ? "plan-active" : ""}`}
                   onClick={() => setPlan("paid")}
                   type="button"
                 >

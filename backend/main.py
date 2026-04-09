@@ -18,6 +18,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "https://clipwash.vercel.app",
     ],
     allow_credentials=False,
     allow_methods=["*"],
@@ -37,7 +38,7 @@ DATA_DIR.mkdir(exist_ok=True)
 if not USAGE_FILE.exists():
     USAGE_FILE.write_text("{}", encoding="utf-8")
 
-model = whisper.load_model("base")
+model = whisper.load_model("tiny")
 
 FREE_DAILY_LIMIT = 3
 FREE_MAX_DURATION_SECONDS = 60
@@ -101,10 +102,6 @@ def save_usage(data):
 
 def today_key():
     return datetime.utcnow().strftime("%Y-%m-%d")
-
-def get_user_usage(client_id: str):
-    usage = load_usage()
-    return usage.get(client_id, {})
 
 def increment_user_usage(client_id: str):
     usage = load_usage()
