@@ -328,24 +328,33 @@ async def stripe_webhook(request: Request):
         print(f"🔥 Webhook received: {event_type}")
 
         # ===== HANDLE CHECKOUT SUCCESS =====
-        if event_type == "checkout.session.completed":
-            client_id = (
-                data_object.get("metadata", {}).get("client_id")
-                or data_object.get("client_reference_id")
+if event_type == "checkout.session.completed":
+    try:
+        metadata = data_object.get("metadata") or {}
+        
+        client_id = (
+            metadata.get("client_id")
+            or data_object.get("client_reference_id")
+        )
+
+        customer_id = data_object.get("customer")
+
+        print("🔥 CHECKOUT COMPLETED")
+        print("client_id:", client_id)
+        print("customer_id:", customer_id)
+
+        if not client_id:
+            print("❌ NO CLIENT ID FOUND")
+        else:
+            set_paid_user(
+                client_id=client_id,
+                paid=True,
+                stripe_customer_id=customer_id
             )
+            print("✅ USER MARKED AS PRO")
 
-            customer_id = data_object.get("customer")
-
-            print("client_id:", client_id)
-            print("customer_id:", customer_id)
-
-            if client_id:
-                set_paid_user(
-                    client_id=client_id,
-                    paid=True,
-                    stripe_customer_id=customer_id
-                )
-                print("✅ User upgraded to PRO")
+    except Exception as e:
+        print("❌ CHECKOUT HANDLER ERROR:", str(e))
 
         # ===== HANDLE SUBSCRIPTION PAYMENT =====
         elif event_type == "invoice.paid":
