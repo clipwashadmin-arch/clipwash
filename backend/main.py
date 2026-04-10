@@ -356,25 +356,41 @@ async def stripe_webhook(request: Request):
             })
             return {"success": True}
 
-        event_type = event.get("type")
-        data_object = event.get("data", {}).get("object", {}) or {}
+        event_type = event["type"]
+        data_object = event["data"]["object"]
+
+        metadata = {}
+        if hasattr(data_object, "get"):
+            metadata = data_object.get("metadata") or {}
+        else:
+            try:
+                metadata = data_object["metadata"] or {}
+            except Exception:
+                metadata = {}
+
+        def get_value(obj, key, default=None):
+            try:
+                if hasattr(obj, "get"):
+                    value = obj.get(key, default)
+                    return default if value is None else value
+                value = obj[key]
+                return default if value is None else value
+            except Exception:
+                return default
 
         append_webhook_log({
             "event_type": event_type,
-            "metadata_client_id": (data_object.get("metadata") or {}).get("client_id"),
-            "client_reference_id": data_object.get("client_reference_id"),
-            "customer": data_object.get("customer")
+            "metadata_client_id": metadata.get("client_id"),
+            "client_reference_id": get_value(data_object, "client_reference_id"),
+            "customer": get_value(data_object, "customer")
         })
 
         if event_type == "checkout.session.completed":
-            metadata = data_object.get("metadata") or {}
-
             client_id = (
                 metadata.get("client_id")
-                or data_object.get("client_reference_id")
+                or get_value(data_object, "client_reference_id")
             )
-
-            customer_id = data_object.get("customer")
+            customer_id = get_value(data_object, "customer")
 
             if client_id:
                 set_paid_user(
@@ -382,25 +398,37 @@ async def stripe_webhook(request: Request):
                     paid=True,
                     stripe_customer_id=customer_id
                 )
+                append_webhook_log({
+                    "checkout_saved_client_id": client_id,
+                    "checkout_saved_customer_id": customer_id
+                })
+            else:
+                append_webhook_log({
+                    "checkout_error": "No client_id found"
+                })
 
         elif event_type == "invoice.payment_failed":
-            customer_id = data_object.get("customer")
+            customer_id = get_value(data_object, "customer")
             if customer_id:
                 mark_user_unpaid_by_customer(customer_id)
 
         elif event_type == "customer.subscription.deleted":
-            customer_id = data_object.get("customer")
+            customer_id = get_value(data_object, "customer")
             if customer_id:
                 mark_user_unpaid_by_customer(customer_id)
 
         elif event_type == "invoice.paid":
-            customer_id = data_object.get("customer")
+            customer_id = get_value(data_object, "customer")
             if customer_id:
                 users = load_users()
                 for client_id, user_data in users.items():
                     if user_data.get("stripe_customer_id") == customer_id:
                         users[client_id]["paid"] = True
                         save_users(users)
+                        append_webhook_log({
+                            "invoice_paid_matched_client_id": client_id,
+                            "invoice_paid_customer_id": customer_id
+                        })
                         break
 
         return {"success": True}
