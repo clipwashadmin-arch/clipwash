@@ -257,7 +257,7 @@ def get_video_duration_seconds(video_path: Path):
 
 @app.get("/")
 def home():
-    return {"message": "ClipWash running"}
+    return {"message": "ClipWash running BUILD-TEST-123"}
 
 
 @app.get("/plan-status")
