@@ -255,6 +255,20 @@ def get_video_duration_seconds(video_path: Path):
         return None
 
 
+def stripe_value(obj, key, default=None):
+    try:
+        return getattr(obj, key)
+    except Exception:
+        pass
+
+    try:
+        return obj[key]
+    except Exception:
+        pass
+
+    return default
+
+
 @app.get("/")
 def home():
     return {"message": "ClipWash running BUILD-TEST-123"}
@@ -323,7 +337,7 @@ def create_checkout_session(client_id: str = Query(...)):
 
         return {
             "success": True,
-            "url": session.url
+            "url": stripe_value(session, "url")
         }
     except Exception as e:
         return {
@@ -343,27 +357,20 @@ def confirm_session(
     try:
         session = stripe.checkout.Session.retrieve(session_id)
 
-        # Safety checks: right mode, right status, right user
-        paid_status = session.get("payment_status")
-        mode = session.get("mode")
-        metadata = session.get("metadata") or {}
-        customer_id = session.get("customer")
-        session_client_id = metadata.get("client_id") or session.get("client_reference_id")
+        paid_status = stripe_value(session, "payment_status")
+        mode = stripe_value(session, "mode")
+        customer_id = stripe_value(session, "customer")
+        metadata = stripe_value(session, "metadata", {}) or {}
+        session_client_id = metadata.get("client_id") or stripe_value(session, "client_reference_id")
 
         if mode != "subscription":
             return {"success": False, "error": "Session is not a subscription checkout"}
 
         if paid_status != "paid":
-            return {
-                "success": False,
-                "error": f"Session not paid yet: {paid_status}"
-            }
+            return {"success": False, "error": f"Session not paid yet: {paid_status}"}
 
         if session_client_id and session_client_id != client_id:
-            return {
-                "success": False,
-                "error": "Session client mismatch"
-            }
+            return {"success": False, "error": "Session client mismatch"}
 
         set_paid_user(
             client_id=client_id,
@@ -407,41 +414,22 @@ async def stripe_webhook(request: Request):
             })
             return {"success": True}
 
-        event_type = event["type"]
-        data_object = event["data"]["object"]
+        event_type = stripe_value(event, "type")
+        event_data = stripe_value(event, "data", {})
+        data_object = event_data["object"] if isinstance(event_data, dict) and "object" in event_data else stripe_value(event_data, "object", {})
 
-        metadata = {}
-        if hasattr(data_object, "get"):
-            metadata = data_object.get("metadata") or {}
-        else:
-            try:
-                metadata = data_object["metadata"] or {}
-            except Exception:
-                metadata = {}
-
-        def get_value(obj, key, default=None):
-            try:
-                if hasattr(obj, "get"):
-                    value = obj.get(key, default)
-                    return default if value is None else value
-                value = obj[key]
-                return default if value is None else value
-            except Exception:
-                return default
+        metadata = stripe_value(data_object, "metadata", {}) or {}
 
         append_webhook_log({
             "event_type": event_type,
             "metadata_client_id": metadata.get("client_id"),
-            "client_reference_id": get_value(data_object, "client_reference_id"),
-            "customer": get_value(data_object, "customer")
+            "client_reference_id": stripe_value(data_object, "client_reference_id"),
+            "customer": stripe_value(data_object, "customer")
         })
 
         if event_type == "checkout.session.completed":
-            client_id = (
-                metadata.get("client_id")
-                or get_value(data_object, "client_reference_id")
-            )
-            customer_id = get_value(data_object, "customer")
+            client_id = metadata.get("client_id") or stripe_value(data_object, "client_reference_id")
+            customer_id = stripe_value(data_object, "customer")
 
             if client_id:
                 set_paid_user(
@@ -459,17 +447,17 @@ async def stripe_webhook(request: Request):
                 })
 
         elif event_type == "invoice.payment_failed":
-            customer_id = get_value(data_object, "customer")
+            customer_id = stripe_value(data_object, "customer")
             if customer_id:
                 mark_user_unpaid_by_customer(customer_id)
 
         elif event_type == "customer.subscription.deleted":
-            customer_id = get_value(data_object, "customer")
+            customer_id = stripe_value(data_object, "customer")
             if customer_id:
                 mark_user_unpaid_by_customer(customer_id)
 
         elif event_type == "invoice.paid":
-            customer_id = get_value(data_object, "customer")
+            customer_id = stripe_value(data_object, "customer")
             if customer_id:
                 users = load_users()
                 for cid, user_data in users.items():
