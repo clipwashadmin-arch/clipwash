@@ -81,42 +81,35 @@ function App() {
     const success = params.get("success");
     const canceled = params.get("canceled");
     const sessionId = params.get("session_id");
+    const clientId = params.get("client_id");
 
-    if (success === "true") {
-      setStatus("Payment received. Verifying Pro access...");
+    if (success === "true" && sessionId && clientId) {
+      setStatus("Payment received. Confirming Pro access...");
 
-      let attempts = 0;
-
-      const interval = setInterval(async () => {
-        attempts += 1;
-        await fetchPlanStatus();
-
-        const clientId = getClientId();
-
+      const confirmPayment = async () => {
         try {
           const response = await fetch(
-            `${API_BASE}/debug-user?client_id=${encodeURIComponent(clientId)}`
+            `${API_BASE}/confirm-session?session_id=${encodeURIComponent(sessionId)}&client_id=${encodeURIComponent(clientId)}`
           );
           const data = await response.json();
 
-          if (data.paid) {
+          if (data.success && data.paid) {
+            await fetchPlanStatus();
             setStatus("Payment confirmed. ClipWash Pro is now active.");
-            clearInterval(interval);
 
             const cleanUrl = window.location.origin + window.location.pathname;
             window.history.replaceState({}, document.title, cleanUrl);
+            return;
           }
 
-          if (attempts >= 10) {
-            clearInterval(interval);
-            setStatus("Payment processed, but Pro access has not appeared yet. Refresh in a few seconds.");
-          }
+          setStatus(data.error || "Payment processed, but Pro access has not appeared yet.");
         } catch (err) {
-          if (attempts >= 10) {
-            clearInterval(interval);
-          }
+          console.error("Confirm session error:", err);
+          setStatus("Could not confirm payment yet. Refresh in a few seconds.");
         }
-      }, 2000);
+      };
+
+      confirmPayment();
     }
 
     if (canceled === "true") {
@@ -124,7 +117,7 @@ function App() {
       const cleanUrl = window.location.origin + window.location.pathname;
       window.history.replaceState({}, document.title, cleanUrl);
     }
-  }, [fetchPlanStatus, getClientId]);
+  }, [fetchPlanStatus]);
 
   const handleFileChange = (e) => {
     const file = e.target.files[0];

@@ -332,6 +332,57 @@ def create_checkout_session(client_id: str = Query(...)):
         }
 
 
+@app.get("/confirm-session")
+def confirm_session(
+    session_id: str = Query(...),
+    client_id: str = Query(...)
+):
+    if not stripe.api_key:
+        return {"success": False, "error": "Missing STRIPE_SECRET_KEY"}
+
+    try:
+        session = stripe.checkout.Session.retrieve(session_id)
+
+        # Safety checks: right mode, right status, right user
+        paid_status = session.get("payment_status")
+        mode = session.get("mode")
+        metadata = session.get("metadata") or {}
+        customer_id = session.get("customer")
+        session_client_id = metadata.get("client_id") or session.get("client_reference_id")
+
+        if mode != "subscription":
+            return {"success": False, "error": "Session is not a subscription checkout"}
+
+        if paid_status != "paid":
+            return {
+                "success": False,
+                "error": f"Session not paid yet: {paid_status}"
+            }
+
+        if session_client_id and session_client_id != client_id:
+            return {
+                "success": False,
+                "error": "Session client mismatch"
+            }
+
+        set_paid_user(
+            client_id=client_id,
+            paid=True,
+            stripe_customer_id=customer_id
+        )
+
+        return {
+            "success": True,
+            "paid": True,
+            "customer_id": customer_id
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
 @app.post("/stripe-webhook")
 async def stripe_webhook(request: Request):
     try:
@@ -421,12 +472,12 @@ async def stripe_webhook(request: Request):
             customer_id = get_value(data_object, "customer")
             if customer_id:
                 users = load_users()
-                for client_id, user_data in users.items():
+                for cid, user_data in users.items():
                     if user_data.get("stripe_customer_id") == customer_id:
-                        users[client_id]["paid"] = True
+                        users[cid]["paid"] = True
                         save_users(users)
                         append_webhook_log({
-                            "invoice_paid_matched_client_id": client_id,
+                            "invoice_paid_matched_client_id": cid,
                             "invoice_paid_customer_id": customer_id
                         })
                         break
